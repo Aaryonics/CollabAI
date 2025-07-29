@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import toast from 'react-hot-toast';
 import ACTIONS from '../Actions';
 import Client from '../components/Client';
-import Editor from '../components/Editor';
+import NotebookEditor from '../components/NotebookEditor';
 import { initSocket } from '../socket';
 import {
     useLocation,
@@ -13,7 +13,6 @@ import {
 
 const EditorPage = () => {
     const socketRef = useRef(null);
-    const codeRef = useRef(null);
     const location = useLocation();
     const { roomId } = useParams();
     const reactNavigator = useNavigate();
@@ -41,9 +40,10 @@ const EditorPage = () => {
                     toast.success(`${username} joined the room.`);
                 }
                 setClients(clients);
-                socketRef.current.emit(ACTIONS.SYNC_CODE, {
-                    code: codeRef.current,
+                // Sync notebook state for new user
+                socketRef.current.emit(ACTIONS.SYNC_NOTEBOOK, {
                     socketId,
+                    roomId,
                 });
             });
 
@@ -57,9 +57,11 @@ const EditorPage = () => {
         init();
 
         return () => {
-            socketRef.current.disconnect();
-            socketRef.current.off(ACTIONS.JOINED);
-            socketRef.current.off(ACTIONS.DISCONNECTED);
+            if (socketRef.current) {
+                socketRef.current.disconnect();
+                socketRef.current.off(ACTIONS.JOINED);
+                socketRef.current.off(ACTIONS.DISCONNECTED);
+            }
         };
     }, []);
 
@@ -87,9 +89,9 @@ const EditorPage = () => {
             <div className="w-60 bg-gray-950 border-r border-purple-700 flex flex-col justify-between py-6 px-4">
                 <div>
                     <div className="flex items-center justify-center mb-6">
-                        <img src="/code-sync.png" alt="logo" className="h-12 w-auto" />
+                        <div className="text-2xl font-bold text-purple-400">⚡ CollabAI</div>
                     </div>
-                    <h3 className="text-purple-300 font-semibold text-sm mb-3">Connected</h3>
+                    <h3 className="text-purple-300 font-semibold text-sm mb-3">Connected Users</h3>
                     <div className="space-y-3">
                         {clients.map((client) => (
                             <Client key={client.socketId} username={client.username} />
@@ -113,7 +115,7 @@ const EditorPage = () => {
                 </div>
             </div>
 
-            {/* Editor Area */}
+            {/* Main Content Area */}
             <div className="flex-1 flex flex-col">
                 {/* Top Bar */}
                 <div className="h-14 px-6 flex items-center justify-between bg-gray-900 border-b border-purple-700">
@@ -125,14 +127,11 @@ const EditorPage = () => {
                     </span>
                 </div>
 
-                {/* Code Editor */}
+                {/* Notebook Editor */}
                 <div className="flex-1 overflow-hidden">
-                    <Editor
+                    <NotebookEditor
                         socketRef={socketRef}
                         roomId={roomId}
-                        onCodeChange={(code) => {
-                            codeRef.current = code;
-                        }}
                     />
                 </div>
             </div>
