@@ -12,13 +12,16 @@ import {
     FiUpload,
     FiPlay,
     FiSquare,
-    FiRefreshCw
+    FiRefreshCw,
+    FiAlertCircle
 } from 'react-icons/fi';
 
 const NotebookEditor = ({ socketRef, roomId }) => {
     const [cells, setCells] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
     const [isExecutingAll, setIsExecutingAll] = useState(false);
+    const [executingCells, setExecutingCells] = useState(new Set());
+    const [executionQueue, setExecutionQueue] = useState([]);
 
     useEffect(() => {
         if (!socketRef.current) return;
@@ -44,6 +47,13 @@ const NotebookEditor = ({ socketRef, roomId }) => {
 
         socketRef.current.on(ACTIONS.DELETE_CELL, ({ cellId }) => {
             setCells(prevCells => prevCells.filter(cell => cell.id !== cellId));
+            // Remove from execution tracking if it was executing
+            setExecutingCells(prev => {
+                const next = new Set(prev);
+                next.delete(cellId);
+                return next;
+            });
+            setExecutionQueue(prev => prev.filter(id => id !== cellId));
         });
 
         socketRef.current.on(ACTIONS.UPDATE_CELL, ({ cellId, content, cellType, language }) => {
@@ -75,6 +85,20 @@ const NotebookEditor = ({ socketRef, roomId }) => {
             );
         });
 
+        // Listen for execution status changes
+        socketRef.current.on(ACTIONS.CELL_EXECUTION_START, ({ cellId }) => {
+            setExecutingCells(prev => new Set([...prev, cellId]));
+        });
+
+        socketRef.current.on(ACTIONS.CELL_EXECUTION_END, ({ cellId }) => {
+            setExecutingCells(prev => {
+                const next = new Set(prev);
+                next.delete(cellId);
+                return next;
+            });
+            setExecutionQueue(prev => prev.filter(id => id !== cellId));
+        });
+
         return () => {
             socketRef.current.off(ACTIONS.NOTEBOOK_STATE);
             socketRef.current.off(ACTIONS.ADD_CELL);
@@ -82,6 +106,8 @@ const NotebookEditor = ({ socketRef, roomId }) => {
             socketRef.current.off(ACTIONS.UPDATE_CELL);
             socketRef.current.off(ACTIONS.REORDER_CELLS);
             socketRef.current.off(ACTIONS.CELL_OUTPUT);
+            socketRef.current.off(ACTIONS.CELL_EXECUTION_START);
+            socketRef.current.off(ACTIONS.CELL_EXECUTION_END);
         };
     }, [socketRef.current]);
 
@@ -135,6 +161,14 @@ const NotebookEditor = ({ socketRef, roomId }) => {
     };
 
     const handleExecuteCell = (cellId) => {
+        // Add to execution queue if not already there
+        setExecutionQueue(prev => {
+            if (!prev.includes(cellId)) {
+                return [...prev, cellId];
+            }
+            return prev;
+        });
+
         socketRef.current.emit(ACTIONS.EXECUTE_CELL, { roomId, cellId });
     };
 
@@ -163,13 +197,17 @@ const NotebookEditor = ({ socketRef, roomId }) => {
 
     const handleExecuteAllCells = async () => {
         setIsExecutingAll(true);
-        const codeCells = cells.filter(cell => cell.type === 'code');
+        const codeCells = cells.filter(cell => cell.type === 'code' && cell.content.trim());
         
+        // Add all code cells to execution queue
+        const cellIds = codeCells.map(cell => cell.id);
+        setExecutionQueue(cellIds);
+        
+        // Execute cells sequentially
         for (const cell of codeCells) {
-            await new Promise(resolve => {
-                socketRef.current.emit(ACTIONS.EXECUTE_CELL, { roomId, cellId: cell.id });
-                setTimeout(resolve, 500); // Wait 500ms between executions
-            });
+            socketRef.current.emit(ACTIONS.EXECUTE_CELL, { roomId, cellId: cell.id });
+            // Small delay between executions to prevent server overload
+            await new Promise(resolve => setTimeout(resolve, 100));
         }
         
         setIsExecutingAll(false);
@@ -181,7 +219,7 @@ const NotebookEditor = ({ socketRef, roomId }) => {
                 prevCells.map(cell => ({ ...cell, output: null }))
             );
             
-            // You could emit this to sync with other users
+            // Sync with other users
             cells.forEach(cell => {
                 if (cell.output) {
                     socketRef.current.emit(ACTIONS.UPDATE_CELL, {
@@ -194,6 +232,16 @@ const NotebookEditor = ({ socketRef, roomId }) => {
                 }
             });
         }
+    };
+
+    const handleInterruptAll = () => {
+        // Clear execution queue and reset executing status
+        setExecutionQueue([]);
+        setExecutingCells(new Set());
+        setIsExecutingAll(false);
+        
+        // Note: In a production environment, you'd want to send an interrupt signal to the server
+        // to actually stop running processes
     };
 
     const handleDragEnd = (result) => {
@@ -274,6 +322,8 @@ const NotebookEditor = ({ socketRef, roomId }) => {
 
     const codeCellCount = cells.filter(cell => cell.type === 'code').length;
     const markdownCellCount = cells.filter(cell => cell.type === 'markdown').length;
+    const executableCells = cells.filter(cell => cell.type === 'code' && cell.content.trim()).length;
+    const hasExecutingCells = executingCells.size > 0;
 
     return (
         <div className="h-full flex flex-col bg-gray-900">
@@ -304,9 +354,9 @@ const NotebookEditor = ({ socketRef, roomId }) => {
                     <div className="flex items-center space-x-2 border-l border-gray-600 pl-4">
                         <button
                             onClick={handleExecuteAllCells}
-                            disabled={isExecutingAll || codeCellCount === 0}
+                            disabled={isExecutingAll || executableCells === 0}
                             className={`flex items-center space-x-2 px-3 py-2 rounded text-sm font-medium transition-colors ${
-                                isExecutingAll || codeCellCount === 0
+                                isExecutingAll || executableCells === 0
                                     ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
                                     : 'bg-green-600 hover:bg-green-500 text-white'
                             }`}
@@ -315,17 +365,39 @@ const NotebookEditor = ({ socketRef, roomId }) => {
                             <span>{isExecutingAll ? 'Running...' : 'Run All'}</span>
                         </button>
                         
+                        {hasExecutingCells && (
+                            <button
+                                onClick={handleInterruptAll}
+                                className="flex items-center space-x-2 bg-red-600 hover:bg-red-500 text-white px-3 py-2 rounded text-sm font-medium transition-colors"
+                            >
+                                <FiSquare size={16} />
+                                <span>Interrupt</span>
+                            </button>
+                        )}
+                        
                         <button
                             onClick={handleClearAllOutputs}
                             className="flex items-center space-x-2 bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded text-sm font-medium transition-colors"
                         >
-                            <FiSquare size={16} />
+                            <FiRefreshCw size={16} />
                             <span>Clear</span>
                         </button>
                     </div>
                 </div>
                 
                 <div className="flex items-center space-x-4">
+                    {/* Execution Status */}
+                    {(hasExecutingCells || executionQueue.length > 0) && (
+                        <div className="flex items-center space-x-2 text-yellow-400 text-sm">
+                            <FiAlertCircle size={16} />
+                            <span>
+                                {executingCells.size > 0 && `${executingCells.size} running`}
+                                {executingCells.size > 0 && executionQueue.length > 0 && ', '}
+                                {executionQueue.length > 0 && `${executionQueue.length} queued`}
+                            </span>
+                        </div>
+                    )}
+                    
                     {/* Cell Stats */}
                     <div className="text-gray-400 text-sm">
                         {codeCellCount} code • {markdownCellCount} markdown • {cells.length} total
@@ -395,6 +467,8 @@ const NotebookEditor = ({ socketRef, roomId }) => {
                                             onMoveDown={handleMoveDown}
                                             isFirst={index === 0}
                                             isLast={index === cells.length - 1}
+                                            isExecuting={executingCells.has(cell.id)}
+                                            executionQueue={executionQueue}
                                         />
                                     ))
                                 )}

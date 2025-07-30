@@ -7,7 +7,7 @@ import 'codemirror/mode/python/python';
 import 'codemirror/mode/markdown/markdown';
 import 'codemirror/addon/edit/closetag';
 import 'codemirror/addon/edit/closebrackets';
-import { FiPlay } from 'react-icons/fi';
+import { FiPlay, FiLoader, FiStopCircle } from 'react-icons/fi';
 import { Draggable } from 'react-beautiful-dnd';
 import CellToolbar from './CellToolbar';
 import OutputCell from './OutputCell';
@@ -24,13 +24,20 @@ const Cell = ({
     onDuplicateCell,
     isFirst,
     isLast,
-    isDragDisabled = false
+    isDragDisabled = false,
+    isExecuting = false, // New prop for execution status
+    executionQueue = [] // New prop for execution queue
 }) => {
     const editorRef = useRef(null);
     const textareaRef = useRef(null);
     const [isHovered, setIsHovered] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
-    const [isExecuting, setIsExecuting] = useState(false);
+    const [localIsExecuting, setLocalIsExecuting] = useState(false);
+
+    // Sync execution status from parent
+    useEffect(() => {
+        setLocalIsExecuting(isExecuting);
+    }, [isExecuting]);
 
     useEffect(() => {
         if (cell.type === 'code' && textareaRef.current && !editorRef.current) {
@@ -95,10 +102,9 @@ const Cell = ({
     };
 
     const handleExecute = async () => {
-        if (cell.type === 'code' && !isExecuting) {
-            setIsExecuting(true);
+        if (cell.type === 'code' && !localIsExecuting && cell.content.trim()) {
+            setLocalIsExecuting(true);
             await onExecuteCell(cell.id);
-            setTimeout(() => setIsExecuting(false), 1000); // Reset after 1 second
         }
     };
 
@@ -112,6 +118,28 @@ const Cell = ({
         }
     };
 
+    const getExecutionStatusText = () => {
+        if (localIsExecuting) {
+            const queuePosition = executionQueue.indexOf(cell.id);
+            if (queuePosition > 0) {
+                return `Queued (${queuePosition + 1})`;
+            }
+            return 'Running...';
+        }
+        return 'Run';
+    };
+
+    const getExecutionIcon = () => {
+        if (localIsExecuting) {
+            const queuePosition = executionQueue.indexOf(cell.id);
+            if (queuePosition > 0) {
+                return <FiStopCircle className="animate-pulse" />;
+            }
+            return <FiLoader className="animate-spin" />;
+        }
+        return <FiPlay />;
+    };
+
     const renderCellContent = () => {
         if (cell.type === 'code') {
             return (
@@ -121,7 +149,8 @@ const Cell = ({
                             <select 
                                 value={cell.language || 'python'}
                                 onChange={(e) => handleLanguageChange(e.target.value)}
-                                className="bg-gray-700 text-white text-sm rounded px-3 py-1 border border-gray-600 focus:border-blue-500 focus:outline-none"
+                                disabled={localIsExecuting}
+                                className="bg-gray-700 text-white text-sm rounded px-3 py-1 border border-gray-600 focus:border-blue-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 <option value="python">Python</option>
                                 <option value="javascript">JavaScript</option>
@@ -130,19 +159,28 @@ const Cell = ({
                             <div className="text-xs text-gray-400">
                                 Press Shift+Enter to run
                             </div>
+
+                            {/* Execution queue indicator */}
+                            {executionQueue.length > 0 && (
+                                <div className="text-xs text-yellow-400">
+                                    {executionQueue.length} cell{executionQueue.length > 1 ? 's' : ''} in queue
+                                </div>
+                            )}
                         </div>
                         
                         <button
                             onClick={handleExecute}
-                            disabled={isExecuting}
+                            disabled={localIsExecuting || !cell.content.trim()}
                             className={`flex items-center space-x-2 px-4 py-2 rounded text-sm font-medium transition-all duration-200 ${
-                                isExecuting 
+                                localIsExecuting 
                                     ? 'bg-yellow-600 text-white cursor-not-allowed' 
+                                    : !cell.content.trim()
+                                    ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
                                     : 'bg-green-600 hover:bg-green-500 text-white hover:shadow-lg'
                             }`}
                         >
-                            <FiPlay size={14} className={isExecuting ? 'animate-spin' : ''} />
-                            <span>{isExecuting ? 'Running...' : 'Run'}</span>
+                            {getExecutionIcon()}
+                            <span>{getExecutionStatusText()}</span>
                         </button>
                     </div>
                     
@@ -153,10 +191,13 @@ const Cell = ({
                             className="hidden"
                         />
                         {/* Execution indicator overlay */}
-                        {isExecuting && (
-                            <div className="absolute inset-0 bg-yellow-500/10 pointer-events-none z-10 flex items-center justify-center">
-                                <div className="bg-yellow-600 text-white px-3 py-1 rounded text-sm">
-                                    Executing...
+                        {localIsExecuting && (
+                            <div className="absolute inset-0 bg-yellow-500/10 pointer-events-none z-10">
+                                <div className="absolute top-2 right-2">
+                                    <div className="bg-yellow-600 text-white px-3 py-1 rounded text-sm flex items-center space-x-2">
+                                        <FiLoader className="animate-spin" size={14} />
+                                        <span>Executing...</span>
+                                    </div>
                                 </div>
                             </div>
                         )}
@@ -226,14 +267,16 @@ const Cell = ({
     };
 
     return (
-        <Draggable draggableId={cell.id} index={index} isDragDisabled={isDragDisabled}>
+        <Draggable draggableId={cell.id} index={index} isDragDisabled={isDragDisabled || localIsExecuting}>
             {(provided, snapshot) => (
                 <div
                     ref={provided.innerRef}
                     {...provided.draggableProps}
                     className={`mb-4 border border-gray-600 rounded-lg overflow-hidden transition-all duration-200 ${
                         snapshot.isDragging ? 'shadow-2xl rotate-1 z-50 ring-2 ring-purple-500' : ''
-                    } ${isHovered ? 'border-purple-500 shadow-lg' : ''}`}
+                    } ${isHovered ? 'border-purple-500 shadow-lg' : ''} ${
+                        localIsExecuting ? 'ring-2 ring-yellow-500/50' : ''
+                    }`}
                     onMouseEnter={() => setIsHovered(true)}
                     onMouseLeave={() => setIsHovered(false)}
                 >
@@ -251,6 +294,7 @@ const Cell = ({
                         onMoveDown={onMoveDown}
                         onDuplicateCell={onDuplicateCell}
                         dragHandleProps={provided.dragHandleProps}
+                        isExecuting={localIsExecuting}
                     />
 
                     {/* Cell Content */}
